@@ -21,3 +21,14 @@ test("manifest is valid", () => {
   assert.strictEqual(m.id, "lyrics-search");
   assert.ok(m.name && m.version && m.contributes, "name/version/contributes present");
 });
+
+test("manifest viewHeader fits the host's limits", () => {
+  const m = JSON.parse(fs.readFileSync(path.join(root, "manifest.json"), "utf8"));
+  assert.ok(m.viewHeader, "viewHeader present");
+  assert.strictEqual(typeof m.viewHeader.subtitle, "string");
+  assert.ok(m.viewHeader.subtitle.length > 0 && m.viewHeader.subtitle.length <= 160, "subtitle 1..160 chars");
+  // Only fields the host accepts from a manifest; colours/HTML are not a thing.
+  for (const k of Object.keys(m.viewHeader)) {
+    assert.ok(["title", "subtitle", "logo", "logoLight", "banner", "hidden"].includes(k), "unexpected key " + k);
+  }
+});
