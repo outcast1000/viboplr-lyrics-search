@@ -1,7 +1,7 @@
 {
   "id": "lyrics-search",
   "name": "Lyrics Search",
-  "version": "1.3.0",
+  "version": "1.3.1",
   "author": "Viboplr",
   "description": "Search the lyrics cached in your library, filter the matches by artist, title or album, and jump straight to the track.",
   "minAppVersion": "1.0.85",
