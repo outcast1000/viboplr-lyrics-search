@@ -4,19 +4,22 @@
 // Lyrics live in the host's `information_values` cache (populated when you view
 // a track's Lyrics tab, e.g. via LRCLIB). This view is a thin shell over the
 // generic `api.informationTypes.searchValues` host API: it searches the "lyrics"
-// info type, scoped to the `$.text` field, and asks the host to resolve each
-// track-entity match back to a playable library track. Any plugin can use the
-// same API for other info types (bios, reviews, …) by passing a different
-// `typeId` / `jsonPath`.
+// info type, scoped to the `$.text` field, in `allTerms` mode — every word (or
+// "quoted phrase") must appear in the lyrics or the track's artist/title — and
+// asks the host to resolve each track-entity match back to a playable library
+// track. Any plugin can use the same API for other info types (bios, reviews,
+// …) by passing a different `typeId` / `jsonPath`.
+//
+// The same search also answers Cmd+K (`api.search`, provider "lyrics"), with
+// `requireTextMatch` so a query that only names songs ("bush") doesn't repeat
+// the library's own track rows there.
 
 function activate(api) {
   var VIEW = "lyrics-search";
 
   var state = {
     query: "",
-    filter: "", // optional metadata filter, applied client-side over the matches
-    rawResults: [], // every lyrics match resolved to a library track
-    results: [], // rawResults after the metadata filter
+    results: [], // lyrics matches resolved to a library track
     searching: false,
     error: null,
     searched: false, // becomes true after the first search so we can show "no results"
@@ -30,57 +33,17 @@ function activate(api) {
     return m + ":" + (s < 10 ? "0" : "") + s;
   }
 
-  // Lower-case + strip diacritics, mirroring the host's SQL search
-  // (strip_diacritics(unicode_lower(...))) so "Björk" matches "bjork".
-  function norm(s) {
-    return String(s == null ? "" : s)
-      .toLowerCase()
-      .normalize("NFD")
-      .replace(/[\u0300-\u036f]/g, "");
-  }
-
-  // Narrow the resolved lyrics matches with a generic, global-search-style
-  // filter: every whitespace-separated term must appear (diacritic-insensitive)
-  // somewhere in the track's title, artist, or album. Empty filter = keep all.
-  function applyFilter() {
-    var terms = norm(state.filter).split(/\s+/).filter(Boolean);
-    if (terms.length === 0) {
-      state.results = state.rawResults.slice();
-      return;
-    }
-    state.results = state.rawResults.filter(function (r) {
-      var t = r.track || {};
-      var hay = norm(
-        (t.title || "") + " " + (t.artist_name || "") + " " + (t.album_title || "")
-      );
-      for (var i = 0; i < terms.length; i++) {
-        if (hay.indexOf(terms[i]) === -1) return false;
-      }
-      return true;
-    });
-  }
-
   function render() {
     var children = [
       {
         type: "search-input",
-        placeholder: "Search lyrics… (e.g. \"hello darkness\")",
+        placeholder: "Search lyrics, titles and artists… (e.g. bush heaven, \"hello darkness\")",
         action: "search",
         value: state.query,
         submitOnly: true,
         buttonLabel: "Search",
       },
-      // A second, live-filtering box that narrows the matches by any metadata
-      // (artist, title, album) — e.g. lyrics "heaven" filtered to "Bush".
-      {
-        type: "search-input",
-        placeholder: "Filter results (optional)… artist, title or album",
-        action: "filter",
-        value: state.filter,
-      },
     ];
-
-    var metaFilter = state.filter.trim();
 
     if (state.searching) {
       children.push({ type: "loading", message: "Searching lyrics…" });
@@ -93,8 +56,7 @@ function activate(api) {
           state.results.length +
           " match" +
           (state.results.length === 1 ? "" : "es") +
-          " for “" + state.query + "”" +
-          (metaFilter ? " matching “" + metaFilter + "”" : ""),
+          " for “" + state.query + "”",
         className: "plugin-muted",
       });
       children.push({
@@ -121,19 +83,10 @@ function activate(api) {
         }),
       });
     } else if (state.searched) {
-      var noneMsg;
-      if (!state.query) {
-        noneMsg = "Type a word or line to search your saved lyrics.";
-      } else if (state.rawResults.length > 0 && metaFilter) {
-        // Lyrics matched, but the metadata filter removed them all.
-        noneMsg =
-          "No matches for “" + state.query + "” matching “" +
-          metaFilter + "”. Clear the filter to see all " +
-          state.rawResults.length + " lyric match" +
-          (state.rawResults.length === 1 ? "" : "es") + ".";
-      } else {
-        noneMsg = "No saved lyrics match “" + state.query + "”.";
-      }
+      var noneMsg = !state.query
+        ? "Type a word or line to search your saved lyrics."
+        : "No saved lyrics match “" + state.query + "”. Only songs whose " +
+          "lyrics you've opened in Viboplr can be searched.";
       children.push({
         type: "text",
         content: noneMsg,
@@ -143,9 +96,10 @@ function activate(api) {
       children.push({
         type: "text",
         content:
-          "Search the lyrics cached in your library, then optionally narrow the " +
-          "matches by artist, title or album (e.g. lyrics “heaven” filtered to " +
-          "“Bush”). Lyrics are saved when you view them on a track's page (the " +
+          "Search the lyrics cached in your library. Every word must appear in " +
+          "the lyrics or the song's title or artist — “bush heaven” finds Bush " +
+          "songs that mention heaven — and “quotes” keep words together as a " +
+          "phrase. Lyrics are saved when you view them on a track's page (the " +
           "Lyrics tab / LRCLIB).",
         className: "plugin-muted",
       });
@@ -158,6 +112,24 @@ function activate(api) {
     );
   }
 
+  // Lyrics matches resolved to a playable library track, best first.
+  function searchLyrics(query, limit, requireTextMatch) {
+    return api.informationTypes
+      .searchValues(query, {
+        typeId: "lyrics",
+        jsonPath: "$.text",
+        matchMode: "allTerms",
+        requireTextMatch: requireTextMatch,
+        resolveTracks: true,
+        limit: limit,
+      })
+      .then(function (matches) {
+        return (Array.isArray(matches) ? matches : []).filter(function (m) {
+          return m && m.track;
+        });
+      });
+  }
+
   function runSearch(raw) {
     var q = String(raw == null ? "" : raw).trim();
     state.query = q;
@@ -165,7 +137,6 @@ function activate(api) {
     state.error = null;
 
     if (!q) {
-      state.rawResults = [];
       state.results = [];
       state.searching = false;
       render();
@@ -180,20 +151,10 @@ function activate(api) {
 
     state.searching = true;
     render();
-    api.informationTypes
-      .searchValues(q, {
-        typeId: "lyrics",
-        jsonPath: "$.text",
-        resolveTracks: true,
-        limit: 100,
-      })
+    searchLyrics(q, 100, false)
       .then(
         function (matches) {
-          // Keep only matches we resolved to a playable library track.
-          state.rawResults = (Array.isArray(matches) ? matches : []).filter(function (m) {
-            return m && m.track;
-          });
-          applyFilter();
+          state.results = matches;
           state.searching = false;
           render();
         },
@@ -210,13 +171,35 @@ function activate(api) {
     runSearch(data && (data.query != null ? data.query : data.value));
   });
 
-  // Live metadata filter — re-narrows the already-fetched matches, no re-fetch.
-  api.ui.onAction("filter", function (data) {
-    var v = data && (data.query != null ? data.query : data.value);
-    state.filter = String(v == null ? "" : v);
-    applyFilter();
-    render();
-  });
+  // Cmd+K. The host asks only when the user picks the "Search … on Lyrics"
+  // row, so this runs once per query, never per keystroke.
+  if (api.search && typeof api.search.onQuery === "function") {
+    api.search.onQuery("lyrics", function (query, limit) {
+      return searchLyrics(String(query == null ? "" : query).trim(), limit || 20, true).then(
+        function (matches) {
+          if (matches.length === 0) return { status: "empty" };
+          return {
+            status: "ok",
+            tracks: matches.map(function (m) {
+              var t = m.track;
+              return {
+                path: t.path || null,
+                title: t.title,
+                artist_name: t.artist_name || null,
+                album_title: t.album_title || null,
+                duration_secs: t.duration_secs != null ? t.duration_secs : null,
+                snippet: m.snippet || null,
+              };
+            }),
+          };
+        },
+        function (e) {
+          console.error("lyrics-search: Cmd+K search failed:", e);
+          return { status: "error", message: "Lyrics search failed: " + e };
+        }
+      );
+    });
+  }
 
   api.ui.onAction("play", function (data) {
     var id = data && data.itemId;
